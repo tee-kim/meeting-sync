@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>local.meeting-sync</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__BIN__</string>
+    </array>
+    <key>WatchPaths</key>
+    <array>
+        <string>__HOME__/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>600</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:__HOME__/.local/bin:/usr/bin:/bin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.local/state/meeting-sync/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.local/state/meeting-sync/launchd.log</string>
+</dict>
+</plist>
