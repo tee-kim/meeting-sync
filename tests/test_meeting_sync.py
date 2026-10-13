@@ -19,6 +19,10 @@ class TitleTests(unittest.TestCase):
         self.assertTrue(ms.is_meeting_title(unicodedata.normalize("NFD", "회의 테스트")))
         self.assertTrue(ms.is_meeting_title("미션 서비스화 sync-up 회의록"))
         self.assertTrue(ms.is_meeting_title("8/19 PM PD 회의록 Weekly"))
+        self.assertTrue(ms.is_meeting_title("주간 공유 미팅"))
+        self.assertTrue(ms.is_meeting_title("디자인 리뷰 : 시안 정리 미팅"))
+        self.assertTrue(ms.is_meeting_title("제품 주간 회의"))
+        self.assertFalse(ms.is_meeting_title("팀미팅"))
         self.assertFalse(ms.is_meeting_title("1on1 메모"))
         self.assertFalse(ms.is_meeting_title("새로운 녹음"))
         self.assertFalse(ms.is_meeting_title("다음 회의 준비"))
@@ -32,6 +36,8 @@ class TitleTests(unittest.TestCase):
         self.assertEqual(ms.slugify("미션 서비스화 sync-up 회의록"), "미션-서비스화-sync-up")
         self.assertEqual(ms.slugify("8/16 Live Cell Weekly 회의록"), "8-16-Live-Cell-Weekly")
         self.assertEqual(ms.slugify("회의록"), "회의")
+        self.assertEqual(ms.slugify("주간 공유 미팅"), "주간-공유")
+        self.assertEqual(ms.slugify("제품 주간 회의"), "제품-주간")
 
     def test_target_dir_dedupes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -139,9 +145,47 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("- 날짜: 2026-10-02 13:50", t)
         self.assertIn("- 길이: 2분", t)
         self.assertTrue(t.rstrip().endswith("안녕하세요"))
-        m = ms.render_minutes(self.rec, "## 요약\n- x")
-        self.assertTrue(m.startswith("# 회의 주간 회고 — 회의록\n"))
-        self.assertIn("[녹취록](transcript.md)", m)
+        m = ms.render_minutes(self.rec, "참석자: 민수, 지영\n\n## 1. 요약\n- x")
+        self.assertTrue(m.startswith("# 회의 주간 회고\n\n| 항목 | 내용 |\n|---|---|\n"))
+        self.assertIn("| 일시 | 2026-10-02(금) 13:50 · 2분 |\n", m)
+        self.assertIn("| 참석자 | 민수, 지영 |\n", m)
+        self.assertIn("| 원문 | [녹취록](transcript.md) |\n", m)
+        self.assertIn("\n\n## 1. 요약\n- x", m)
+        self.assertNotIn("참석자: 민수", m)
+
+    def test_render_minutes_title_and_missing_attendees(self):
+        rec = ms.Recording("u", "주간 공유 회의록", Path("a"), dt.datetime(2026, 10, 5, 9, 0), 3600.0)
+        m = ms.render_minutes(rec, "## 1. 요약\n- x")
+        self.assertTrue(m.startswith("# 주간 공유\n"))
+        self.assertIn("| 일시 | 2026-10-05(월) 09:00 · 60분 |", m)
+        self.assertIn("| 참석자 | 확인 불가 |", m)
+
+    def test_read_saved_transcript(self):
+        d = self.repo / "2026/10/x"
+        d.mkdir(parents=True)
+        footer = ms.render_footer(self.rec, dt.datetime(2026, 10, 6), "owner/meeting-notes")
+        (d / "transcript.md").write_text(ms.render_transcript(self.rec, "첫 줄\n둘째 줄") + footer, encoding="utf-8")
+        (d / "minutes.md").write_text("# 옛 회의록\n" + footer, encoding="utf-8")
+        rec, text, old_footer = ms.read_saved(d)
+        self.assertEqual((rec.title, rec.date, int(rec.duration // 60)), ("회의 주간 회고", dt.datetime(2026, 10, 2, 13, 50), 2))
+        self.assertEqual(text, "첫 줄\n둘째 줄")
+        self.assertEqual(old_footer, footer)
+
+    def test_reformat_rewrites_minutes_only(self):
+        d = self.repo / "2026/10/x"
+        d.mkdir(parents=True)
+        footer = ms.render_footer(self.rec, dt.datetime(2026, 10, 6), "owner/meeting-notes")
+        (d / "transcript.md").write_text(ms.render_transcript(self.rec, "녹취") + footer, encoding="utf-8")
+        (d / "minutes.md").write_text("# 옛 회의록\n" + footer, encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "init")
+        with mock.patch.object(ms, "summarize", return_value="참석자: 확인 불가\n\n## 1. 요약\n- 새"):
+            ms.reformat(d, self.repo)
+        m = (d / "minutes.md").read_text(encoding="utf-8")
+        self.assertIn("## 1. 요약\n- 새", m)
+        self.assertTrue(m.endswith(footer))
+        log = subprocess.run(["git", "-C", str(self.repo), "log", "-1", "--format=%s"], capture_output=True, text=True).stdout
+        self.assertEqual(log.strip(), "회의록 포맷 정리: 2026-10-02 회의 주간 회고")
 
     def test_render_footer(self):
         f = ms.render_footer(self.rec, dt.datetime(2026, 10, 6, 22, 3), "owner/meeting-notes")

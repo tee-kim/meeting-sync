@@ -31,29 +31,48 @@ STATE_FILE = STATE_DIR / "processed.json"
 WHISPER_MODEL = HOME / ".local/share/whisper/ggml-large-v3-turbo.bin"
 TITLE_PREFIXES = ("회의", "미팅")
 TITLE_KEYWORD = "회의록"  # 제목 어디에 있어도 처리 대상
+# 제목이 회의·미팅으로 끝나도 처리 대상 (예: "… Weekly 미팅")
 CORE_DATA_OFFSET = 978307200  # 2001-01-01 UTC의 Unix 시각
 STABLE_WAIT = 30
 
 MINUTES_PROMPT = """다음 stdin은 회의 녹음을 음성 인식으로 받아쓴 녹취록이다. 회의 제목: {title}, 날짜: {date}.
-녹취록만 근거로 한국어 회의록을 Markdown으로 작성하라. 아래 섹션을 이 순서대로 쓴다.
+녹취록만 근거로 한국어 회의록을 Markdown으로 작성하라. 아래 형식을 글자 그대로 지킨다.
 
-## 요약
-(3줄 이내)
-## 참석자
-(녹취에서 확인되는 이름만. 확인되지 않으면 "확인 불가")
-## 논의 내용
-## 결정 사항
-## 액션 아이템
-(- [ ] 담당자: 할 일 (기한) 형식. 담당자나 기한을 모르면 그 부분은 생략)
-## 확인 필요
-(음성 인식 오류로 의미가 불분명한 부분)
+첫 줄: "참석자: " 뒤에 녹취에서 확인되는 이름을 쉼표로 나열. 하나도 없으면 "참석자: 확인 불가"
 
-녹취록에 없는 내용은 지어내지 말고, 머리말이나 맺음말 없이 회의록 본문만 출력하라."""
+## 1. 요약
+- 핵심 3개 이하. 각 1~2문장
+
+## 2. 안건별 논의
+### 2.1 (안건 이름)
+- 현황: (공유된 사실, 수치)
+- 논의: (오간 의견, 쟁점)
+(안건마다 ### 2.2, ### 2.3 … 으로 이어서 쓴다. 다룬 순서를 따른다)
+
+## 3. 결정 사항
+| # | 결정 내용 | 안건 |
+|---|---|---|
+(안건 칸에는 2.1 같은 번호. 결정이 없으면 표 대신 "- 없음")
+
+## 4. 액션 아이템
+| # | 담당 | 할 일 | 기한 |
+|---|---|---|---|
+(담당은 이름이나 팀. 모르면 "미정". 기한은 회의 날짜 기준으로 YYYY-MM-DD로 환산하고, 환산이 애매하면 "다음 주 중"처럼 말한 표현을 그대로 기한 칸에 쓴다. 기한 표현을 할 일 칸에 넣지 않는다. 언급이 없으면 "미정". 액션이 없으면 표 대신 "- 없음")
+
+## 5. 확인 필요
+- 음성 인식 오류로 의미가 불분명한 부분이나 고유명사 (없으면 "- 없음")
+
+규칙:
+- 모든 문장은 개조식으로 '~함', '~임', '~예정'처럼 끝낸다.
+- 표 칸 안에서는 줄바꿈과 | 문자를 쓰지 않는다.
+- 녹취록에 없는 내용은 지어내지 않는다. 불확실한 고유명사 뒤에는 (?)를 붙인다.
+- 머리말, 맺음말, 코드 블록 없이 첫 줄부터 위 형식만 출력한다."""
 
 log = logging.getLogger("meeting-sync")
 
 _PREFIX_RE = re.compile(r"^(?:회의|미팅)(?:[\s_\-:]+|$)")
 _KEYWORD_RE = re.compile(r"(?:^|[\s_\-:])회의록(?=[\s_\-:]|$)")
+_SUFFIX_RE = re.compile(r"[\s_\-:]+(?:회의|미팅)$")
 
 
 def nfc(s):
@@ -62,12 +81,13 @@ def nfc(s):
 
 def is_meeting_title(title):
     t = nfc(title).strip()
-    return t.startswith(TITLE_PREFIXES) or TITLE_KEYWORD in t
+    return t.startswith(TITLE_PREFIXES) or TITLE_KEYWORD in t or bool(_SUFFIX_RE.search(t))
 
 
 def slugify(title):
     t = _KEYWORD_RE.sub(" ", nfc(title).strip()).strip()
     t = _PREFIX_RE.sub("", t)
+    t = _SUFFIX_RE.sub("", t)
     t = re.sub(r'[\\/:*?"<>|#\[\]]', " ", t)
     t = re.sub(r"\s+", "-", t.strip())
     t = re.sub(r"-{2,}", "-", t).strip("-._")
@@ -192,10 +212,27 @@ def render_transcript(rec, text):
             f"---\n\n{text}\n")
 
 
+WEEKDAYS = "월화수목금토일"
+_ATTENDEES_RE = re.compile(r"^\s*\**참석자\**\s*[:：]\s*(.*)$")
+
+
+def display_title(title):
+    return re.sub(r"\s{2,}", " ", _KEYWORD_RE.sub(" ", nfc(title))).strip() or nfc(title).strip()
+
+
 def render_minutes(rec, body):
-    return (f"# {rec.title} — 회의록\n\n"
-            f"- 날짜: {rec.date:%Y-%m-%d %H:%M}\n"
-            f"- 원문: [녹취록](transcript.md)\n\n"
+    # claude가 첫 줄에 "참석자: …"를 쓰면 머리 표로 옮긴다
+    lines = body.strip().splitlines()
+    m = _ATTENDEES_RE.match(lines[0]) if lines else None
+    attendees = (m.group(1).strip() if m else "") or "확인 불가"
+    if m:
+        body = "\n".join(lines[1:]).strip()
+    when = f"{rec.date:%Y-%m-%d}({WEEKDAYS[rec.date.weekday()]}) {rec.date:%H:%M} · {int(rec.duration // 60)}분"
+    return (f"# {display_title(rec.title)}\n\n"
+            f"| 항목 | 내용 |\n|---|---|\n"
+            f"| 일시 | {when} |\n"
+            f"| 참석자 | {attendees.replace('|', '/')} |\n"
+            f"| 원문 | [녹취록](transcript.md) |\n\n"
             f"{body}\n")
 
 
@@ -242,6 +279,34 @@ def process(rec, repo, model):
         shutil.rmtree(d, ignore_errors=True)
         raise
     return d
+
+
+FOOTER_MARK = "\n---\n\n**생성 정보**"
+
+
+def read_saved(d):
+    """이미 올린 회의 폴더에서 녹음 정보, 녹취 본문, minutes.md의 생성 정보 블록을 읽는다."""
+    t = (d / "transcript.md").read_text(encoding="utf-8")
+    head, _, rest = t.partition("\n---\n\n")
+    text = rest.split(FOOTER_MARK)[0].strip()
+    title = re.search(r"^# (.*) — 녹취록$", head, re.M).group(1)
+    date = dt.datetime.strptime(re.search(r"^- 날짜: (.+)$", head, re.M).group(1).strip(), "%Y-%m-%d %H:%M")
+    minutes = int(re.search(r"^- 길이: (\d+)분", head, re.M).group(1))
+    m = (d / "minutes.md").read_text(encoding="utf-8")
+    i = m.find(FOOTER_MARK)
+    footer = m[i:] if i >= 0 else ""
+    return Recording(f"saved:{d.name}", title, d / "transcript.md", date, minutes * 60.0), text, footer
+
+
+def reformat(d, repo):
+    """저장된 녹취록으로 회의록만 현재 포맷으로 다시 만든다 (다시 녹취하지 않음)."""
+    rec, text, footer = read_saved(d)
+    minutes = summarize(text, rec.title, f"{rec.date:%Y-%m-%d}")
+    f = d / "minutes.md"
+    f.write_text(render_minutes(rec, minutes) + footer, encoding="utf-8")
+    rel = str(f.relative_to(repo))
+    run(["git", "-C", str(repo), "add", "--", rel])
+    run(["git", "-C", str(repo), "commit", "-q", "-m", f"회의록 포맷 정리: {rec.date:%Y-%m-%d} {rec.title}", "--", rel])
 
 
 def push_pending(repo):
@@ -342,6 +407,8 @@ def main(argv=None):
     p.add_argument("--no-push", action="store_true", help="커밋까지만 하고 push하지 않음")
     p.add_argument("--file", type=Path, help="음성 메모 대신 이 오디오 파일을 처리 (처리 기록에 남기지 않음)")
     p.add_argument("--title", help="--file과 함께 쓰는 회의 제목")
+    p.add_argument("--reformat", nargs="+", type=Path, metavar="DIR",
+                   help="이미 올린 회의 폴더의 회의록을 저장된 녹취록으로 다시 만듦")
     args = p.parse_args(argv)
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -360,6 +427,13 @@ def main(argv=None):
             rec = Recording(f"file:{args.file}", nfc(args.title), args.file,
                             dt.datetime.fromtimestamp(args.file.stat().st_mtime), audio_duration(args.file))
             print(process(rec, NOTES_REPO, WHISPER_MODEL))
+            if not args.no_push:
+                push_pending(NOTES_REPO)
+            return 0
+        if args.reformat:
+            for d in args.reformat:
+                log.info("포맷 정리: %s", d)
+                reformat(d.resolve(), NOTES_REPO)
             if not args.no_push:
                 push_pending(NOTES_REPO)
             return 0

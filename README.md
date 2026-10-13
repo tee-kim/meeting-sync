@@ -2,12 +2,12 @@
 
 Mac 음성 메모 앱으로 녹음한 회의를 녹취록과 회의록으로 바꿔 GitHub 저장소에 자동으로 쌓는 도구예요.
 
-녹음 제목에 `회의록`을 넣으면(또는 제목을 `회의`·`미팅`으로 시작하면) 1시간 회의 기준 약 15분 뒤 아래 두 파일이 커밋돼요.
+녹음 제목에 `회의록`을 넣거나, 제목을 `회의`·`미팅`으로 시작하거나 끝내면 1시간 회의 기준 약 15분 뒤 아래 두 파일이 커밋돼요.
 
 ```
 2026/09/2026-09-09_주간-회고/
   transcript.md   녹취 전문 (whisper-cpp, Mac에서 처리)
-  minutes.md      회의록: 요약, 참석자, 논의 내용, 결정 사항, 액션 아이템
+  minutes.md      회의록: 일시·참석자 표, 요약, 안건별 논의, 결정 사항·액션 아이템 표
 ```
 
 음성 파일은 업로드하지 않아요. 녹취 텍스트는 회의록 작성을 위해 Claude(Anthropic)로 전송돼요.
@@ -57,6 +57,7 @@ gh repo create meeting-notes --private --source . --push
 | 명령 | 용도 |
 |---|---|
 | `python3 meeting_sync.py --file a.m4a --title "회의 테스트" --no-push` | 음성 메모 없이 파일 하나로 시험 |
+| `python3 meeting_sync.py --reformat ~/Project/meeting-notes/2026/10/*` | 이미 올린 회의록을 저장된 녹취록으로 현재 포맷에 맞춰 다시 만들기 |
 | `python3 -m unittest discover -s tests` | 단위 테스트 |
 | `tail -f ~/.local/state/meeting-sync/sync.log` | 실행 로그 |
 
